@@ -1,0 +1,44 @@
+﻿<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Freighter Injection Test</title>
+    <style>
+      body { font-family: system-ui, sans-serif; padding: 24px; }
+      pre { background:#111; color:#0f0; padding:12px; border-radius:8px; white-space:pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>Freighter Injection Test</h1>
+    <p id="status">Checking…</p>
+    <pre id="out"></pre>
+
+    <script>
+      function log(msg){ document.getElementById('out').textContent += msg + "\\n"; }
+      (async () => {
+        const s = document.getElementById('status');
+        if (!window.freighter) {
+          s.textContent = "❌ window.freighter is undefined";
+          log("Tip: In Chrome/Brave → extensions → Freighter → Site access: On all sites. Then hard-reload.");
+          return;
+        }
+        s.textContent = "✅ window.freighter is present";
+        try {
+          if (window.freighter.getNetworkDetails) {
+            const nd = await window.freighter.getNetworkDetails();
+            log("getNetworkDetails: " + JSON.stringify(nd));
+          } else if (window.freighter.getNetwork) {
+            const n = await window.freighter.getNetwork();
+            log("getNetwork: " + n);
+          }
+          if (window.freighter.requestAccess) {
+            const acc = await window.freighter.requestAccess();
+            log("requestAccess: " + JSON.stringify(acc));
+          }
+        } catch (e) {
+          log("Error: " + (e.message || e));
+        }
+      })();
+    </script>
+  </body>
+</html>

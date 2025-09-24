@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kale Grab Rush</title>
+    <link rel="icon" href="data:," />
+
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100vh;
+        overflow: hidden;
+        background: linear-gradient(to bottom, #87ceeb, #98fb98);
+        font-family: Arial, sans-serif;
+      }
+      #phaser-game-container { width: 100%; height: 100%; }
+      #chain-ui {
+        position: fixed; top: 16px; right: 16px; z-index: 9999;
+        display: flex; gap: 8px;
+      }
+      #chain-ui button {
+        padding: 8px 12px; border: none; border-radius: 8px; cursor: pointer;
+        font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,.15);
+      }
+      #connectBtn { background: #e6f0ff; }
+      #status {
+        position: fixed; bottom: 10px; right: 16px;
+        font: 12px/1.2 monospace; opacity: .75; white-space: pre-wrap; max-width: 38ch;
+      }
+    </style>
+
+    <!-- Freighter-API (browser build) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-freighter-api/5.0.0/index.min.js"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+
+    <!-- ✅ Bridge runEntry helpers onto window BEFORE the wallet script -->
+    <script type="module">
+      import {
+        setEntryPayment,
+        getEntryPayment,
+        clearEntryPayment,
+        hasFreshEntry,
+      } from "./src/runEntry.js";
+
+      window.kgrSetEntryPayment = setEntryPayment;
+      window.kgrGetEntryPayment = getEntryPayment;
+      window.kgrClearEntryPayment = clearEntryPayment;
+      window.kgrHasFreshEntry   = hasFreshEntry;
+
+      console.log("[kgr] runEntry bridge ready");
+    </script>
+  </head>
+
+  <body>
+    <div id="phaser-game-container"></div>
+
+    <!-- Start your Phaser game (Vite will bundle imports from node_modules) -->
+    <script type="module" src="./main.js"></script>
+
+    <!-- Optional helpers you already had -->
+    <script src="https://storage.googleapis.com/rosebud_staticfiles/ChatManager.js"></script>
+    <script src="https://storage.googleapis.com/rosebud_staticfiles/ImageGenerator.js"></script>
+    <script src="https://storage.googleapis.com/rosebud_staticfiles/ProgressLogger.js"></script>
+    <script src="https://storage.googleapis.com/rosebud_staticfiles/OGP.js"></script>
+
+    <!-- Wallet UI -->
+    <div id="chain-ui">
+      <button id="connectBtn">Connect Wallet</button>
+    </div>
+    <div id="status"></div>
+
+    <!-- Wallet + secure payment (no memo) -->
+    <script type="module">
+      import { Horizon, Asset, Operation, TransactionBuilder, Networks } from "@stellar/stellar-sdk";
+
+      const CONFIG = Object.freeze({
+        HORIZON_URL: "https://horizon.stellar.org",
+        NETWORK_PASSPHRASE: Networks.PUBLIC,
+        KALE_CODE: "KALE",
+        KALE_ISSUER: "GBDVX4VELCDSQ54KQJYTNHXAHFLBCA77ZY2USQBM4CSHTTV7DME7KALE",
+        TREASURY: "GDIH6XE3UZ5CW37X3OKVS3SYKHG32PRPXPT3722NJ2AY3MOLCQNMUUTT",
+        PRICE_KALE: "1"
+      });
+
+      const horizon = new Horizon.Server(CONFIG.HORIZON_URL);
+
+      const connectBtn = document.getElementById("connectBtn");
+      const statusEl   = document.getElementById("status");
+      const log = (m) => {
+        console.log("[kale]", m);
+        if (statusEl) statusEl.textContent = typeof m === "string" ? m : JSON.stringify(m, null, 2);
+      };
+
+      let playerAddress = null;
+      let paying = false;
+
+      async function freighterApi() {
+        const t0 = Date.now();
+        while (Date.now() - t0 < 5000) {
+          if (window.freighterApi) return window.freighterApi;
+          await new Promise(r => setTimeout(r, 100));
+        }
+        throw new Error("Freighter-API not loaded (cdnjs).");
+      }
+
+      async function ensureFreighterReadyOnMainnet() {
+        const api = await freighterApi();
+        const conn = await api.isConnected();
+        if (!conn?.isConnected) throw new Error("Freighter extension not detected.");
+
+        const allowed = await api.isAllowed();
+        if (!allowed?.isAllowed) {
+          const r = await api.setAllowed();
+          if (!r?.isAllowed) throw new Error("Please allow this site in Freighter.");
+        }
+
+        const nd = await api.getNetworkDetails();
+        if (nd?.error) throw new Error(nd.error);
+        if (nd?.network !== "PUBLIC") throw new Error(`Freighter is set to ${nd?.network}. Switch to PUBLIC (Mainnet).`);
+        return api;
+      }
+
+      // Connect button
+      if (connectBtn) {
+        connectBtn.addEventListener("click", async () => {
+          try {
+            const api = await ensureFreighterReadyOnMainnet();
+            const access = await api.requestAccess();
+            if (access?.error) throw new Error(access.error);
+            const addr = access?.address || (await api.getAddress())?.address;
+            if (!addr) throw new Error("No address from Freighter.");
+
+            playerAddress = addr;
+            connectBtn.textContent = "Connected: " + playerAddress.slice(0,6) + "..." + playerAddress.slice(-4);
+            log("Wallet connected");
+          } catch (e) { console.error(e); alert(e.message || e); log(e.message || e); }
+        });
+      }
+
+      // Called by your game when user pays to start a run
+      async function payEntryFee() {
+        if (paying) throw new Error("A payment is already pending.");
+        if (!playerAddress) throw new Error("Connect wallet first.");
+        paying = true;
+
+        try {
+          const api = await ensureFreighterReadyOnMainnet();
+          const src = await horizon.loadAccount(playerAddress);
+          const fee = await horizon.fetchBaseFee();
+          const kale = new Asset(CONFIG.KALE_CODE, CONFIG.KALE_ISSUER);
+
+          const tx = new TransactionBuilder(src, {
+            fee: String(fee),
+            networkPassphrase: CONFIG.NETWORK_PASSPHRASE
+          })
+            .addOperation(Operation.payment({
+              destination: CONFIG.TREASURY,
+              asset: kale,
+              amount: CONFIG.PRICE_KALE
+            }))
+            .setTimeout(180)
+            .build();
+
+          const signed = await api.signTransaction(tx.toXDR(), {
+            networkPassphrase: CONFIG.NETWORK_PASSPHRASE,
+            address: playerAddress
+          });
+
+          const xdr = signed?.signedTxXdr || signed;
+          if (!xdr) throw new Error("Freighter did not return a signed transaction.");
+
+          const txObj = TransactionBuilder.fromXDR(xdr, CONFIG.NETWORK_PASSPHRASE);
+          const res = await horizon.submitTransaction(txObj);
+
+          console.log(`[kale] Entry fee paid. tx: ${res.hash}`);
+
+          // ✅ Record “fresh entry” so Game Over can submit immediately
+          if (window.kgrSetEntryPayment) {
+            window.kgrSetEntryPayment({
+              txHash: res.hash,
+              address: playerAddress,
+              paidAtMs: Date.now()
+            });
+            console.log("[kgr] entry recorded (client)");
+          } else {
+            console.warn("[kgr] kgrSetEntryPayment missing — did /src/runEntry.js load?");
+          }
+
+          return res;
+        } finally {
+          paying = false;
+        }
+      }
+
+      // Expose minimal API to your scenes (StageSelect etc.)
+      window.kaleChain = Object.freeze({
+        ensureConnected: async () => {
+          if (playerAddress) return playerAddress;
+          const api = await ensureFreighterReadyOnMainnet();
+          const access = await api.requestAccess();
+          const addr = access?.address || (await api.getAddress())?.address;
+          if (!addr) throw new Error("No address from Freighter.");
+          playerAddress = addr;
+          if (connectBtn) connectBtn.textContent = "Connected: " + playerAddress.slice(0,6) + "..." + playerAddress.slice(-4);
+          return playerAddress;
+        },
+        payEntryFee
+      });
+
+      log("Wallet script ready (no-memo, hardened)");
+    </script>
+  </body>
+</html>
